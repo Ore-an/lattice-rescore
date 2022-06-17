@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 
 import os
-import logging
-
+import glob
+import gzip
 import jiwer
 import editdistance
-from espnet.asr.asr_utils import get_model_conf
-from espnet.asr.asr_utils import torch_load
-from espnet.asr.pytorch_backend.asr_init import load_trained_model
-import espnet.nets.pytorch_backend.lm.default as lm_pytorch
+# from espnet.asr.asr_utils import get_model_conf
+# from espnet.asr.asr_utils import torch_load
+# from espnet.asr.pytorch_backend.asr_init import load_trained_model
+# import espnet.nets.pytorch_backend.lm.default as lm_pytorch
 import lattice
-import torch
 
 def text_processing(acronyms_path=None):
     if acronyms_path:
@@ -220,3 +219,84 @@ def file_iterator(dir_in, suffix_in, dir_out=None, suffix_out=None,
                         continue
                 else:
                     yield uttid, file_in, file_out, None
+
+
+class kaldiLatticeIterator(object):
+    """Globs directory for files with certain suffix_in, open them end extract the lattice for all utterances.
+       Yelds processed utterances.
+
+    :param dir_in: Input directory.
+    :type dir_in: str
+    :param suffix_in: Suffix of the file to look for.
+    :type suffix_in: str
+    :param dir_out: Output director, which mirrors the input directory.
+    :type dir_out: str
+    :param suffix_out: Suffix of the output filename.
+    :type suffix_out: str
+    :param resource: A dictionary containing mapping from utterance id
+                     to reference or feature.
+    :type resource: dict
+    :yield: utterance Id, input lattice, output file, ref or feature.
+    :rtype: tuple
+    """
+    def __init__(self, dir_in, suffix_in, dir_out=None, suffix_out=None, resource=None):
+        dir_in = os.path.abspath(dir_in)
+        self.dir_out = os.path.abspath(dir_out) if dir_out else None
+        self.suffix_out = suffix_out
+        self.lattice_dict = {}
+        self.resource = resource
+        open_fn = gzip.open if suffix_in.endswith('.gz') else open
+        for fn in glob.glob('{}/*{}'.format(dir_in, suffix_in)):
+            with open_fn(fn, 'rt') as f:
+                kaldi_lattices = f.readlines()
+
+            lat = []
+            uttid_found = False
+            for line in kaldi_lattices:
+                line = line.strip().split(' ')
+                weight = None
+                if not uttid_found:
+                    uttid = line[0]
+                    uttid_found = True
+                else:
+                    if len(line) > 1:
+                        weights = line[-1].split(',')
+                        weight = float(weights[0]) + float(weights[1])  # acoustic + lm (or transition if lmwt=-1)
+                        frames = len(weights[2].split('_'))
+                    elif line[0]:
+                        line = int(line[0])
+                    else:
+                        self.lattice_dict[uttid] = lat
+                        lat = []
+                        uttid_found = False
+                if weight is not None:
+                    lat.append({'start': int(line[0]), 'end': int(line[1]), 'label': line[2], 'acwt': -weight, 'frames': frames * 3})  # the original framerate is downsampled by 3 TODO: don't hardcode
+                elif isinstance(line, int):
+                    lat.append({'start': line})
+            self.uttids = list(self.lattice_dict.keys())
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return self.next()
+
+    def next(self):
+        if len(self.uttids) > 0:
+            for i, uttid in enumerate(self.uttids):
+                if self.dir_out:
+                    os.makedirs(self.dir_out, exist_ok=True)
+                    file_out = "{}/{}.{}".format(self.dir_out, uttid, self.suffix_out)
+                else:
+                    file_out = None
+                if self.resource:
+                    if uttid in self.resource:
+                        self.uttids = self.uttids[i + 1:]
+                        return uttid, self.lattice_dict[uttid], file_out, self.resource[uttid]
+                    else:
+                        continue
+                else:
+                    self.uttids = self.uttids[i+1:]
+                    return uttid, self.lattice_dict[uttid], file_out, None
+        else:
+            raise StopIteration()

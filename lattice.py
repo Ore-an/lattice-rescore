@@ -157,9 +157,52 @@ class Lattice(object):
             else:
                 raise ValueError('file_type must be either htk or kaldi')
 
-    def kaldi2dag(self, file_path):
-        """Read a Kaldi format lattice file to populate a DAG."""
-        raise NotImplementedError
+    def kaldi2dag(self, lat_list):
+        """Read a Kaldi CompactLattice format list of dicts to populate a DAG."""
+        self.header = {'lmscale': 1.0}
+        self.nframes = 0
+        n_nodes = max([x['start'] for x in lat_list]) + 1  # the last node is a dict with 'start' only.
+        self.nodes = [None] * n_nodes
+        self.arcs = [None] * len(lat_list)
+        self.nodes[0] = self.Node('!NULL', 0, None)
+        for idx, arc_info in enumerate(lat_list[:-1]):
+            # This is an arc
+            start_idx = arc_info['start']
+            end_idx = arc_info['end']
+            label = arc_info['label']
+            if label == '<eps>':
+                if start_idx == 0:
+                    label = SOS
+                else:
+                    label = EOS
+            ascr = arc_info.get('acwt', 0)
+            lscr = arc_info.get('lmwt', 0)
+            nscr = arc_info.get('n', [])
+            iscr = arc_info.get('i', [])
+            frame_len = arc_info['frames']
+
+            frame = self.nodes[start_idx].entry + frame_len
+            var = 1
+            node = self.Node(label, frame, var)
+            self.nodes[end_idx] = node
+            if frame > self.nframes:
+                self.nframes = frame
+
+            start_node = self.nodes[start_idx]
+            end_node = self.nodes[end_idx]
+
+            if isinstance(nscr, str):
+                nscr = [float(n) for n in nscr.split(',')]
+            if isinstance(iscr, str):
+                iscr = [float(i) for i in iscr.split(',')]
+            arc = self.Arc(
+                start_node, end_node, ascr, lscr, nscr, iscr)
+            self.arcs[idx] = arc
+            # Link up existing nodes
+            start_node.exits.append(arc)
+            end_node.entries.append(arc)
+        self.sort_nodes()
+
 
     def htk2dag(self, file_path):
         """Read an HTK format lattice file to populate a DAG."""

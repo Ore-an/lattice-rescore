@@ -13,14 +13,14 @@ import lattice_rescore
 import utils
 
 def lattice_expand(from_iterator, ngram, gsf=None, rnnlms=None, iscas=None,
-                   sp=None, loaders=None, overwrite=False, acronyms={}):
+                   sp=None, loaders=None, overwrite=False, acronyms={}, format='htk'):
     """Lattice expansion and compute RNNLM and/or ISCA scores."""
     uttid, lat_in, lat_out, feat_path = from_iterator
     if not os.path.isfile(lat_out) or overwrite:
         timing = []
         logging.info('Processing lattice %s' % lat_in)
         start = time.time()
-        lat = Lattice(lat_in, file_type='htk')
+        lat = Lattice(lat_in, file_type=format)
         if gsf is None:
             gsf = float(lat.header['lmscale'])
         timing.append(time.time() - start)
@@ -84,6 +84,8 @@ def main():
                         help='Overwrite existing output file if exits.')
     parser.add_argument('--acronyms', type=str, default=None,
                         help='Path to acronoym mapping (swbd)')
+    parser.add_argumet('--format', type=str, default='htk', choices=['htk', 'kaldi'],
+                       help='Format of the lattices.')
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -140,14 +142,18 @@ def main():
         sp = None
 
     # set up iterator and run all
-    all_lat = utils.file_iterator(
-        args.indir, '.lat.gz', args.outdir, '.lat.gz', resource=js)
+    if args.format == 'kaldi':
+        all_lat = utils.kaldiLatticeIterator(
+            args.indir, '.lat', args.outdir, '.lat.gz', resource=js)
+    else:
+        all_lat = utils.file_iterator(
+            args.indir, '.lat.gz', args.outdir, '.lat.gz', resource=js)
     all_time = None
     counter = 0
     for each_iteration in all_lat:
         timing = lattice_expand(
             each_iteration, args.ngram, args.gsf, rnnlms, iscas, sp, loaders,
-            args.overwrite, acronyms
+            args.overwrite, acronyms, format=args.format
         )
         all_time = timing if all_time is None else all_time + timing
         counter += 1
