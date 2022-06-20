@@ -26,7 +26,7 @@ echo $0 $@ >> $proc_lat_dir/../CMD
 if [ $stage -le 1 ]; then
     mkdir -p $proc_lat_dir_nolm
     echo "Processing Kaldi lattices in ${kaldi_lat_dir} and saving to ${proc_lat_dir_nolm}"
-    utils/convert_slf_parallel.sh \
+    utils/process_lattice.sh \
         --cmd "$cmd" \
         --tscale $tscale \
         --original-scores false \
