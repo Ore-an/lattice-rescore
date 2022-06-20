@@ -15,7 +15,7 @@ set -euo pipefail
 
 kaldi_lat_dir=$1
 proc_lat_dir=$2
-proc_lat_dir_nolm=${htk_lat_dir}_nolm
+proc_lat_dir_nolm=${proc_lat_dir}_nolm
 mkdir -p $proc_lat_dir
 
 echo "=========================" >> $proc_lat_dir/../CMD

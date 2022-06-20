@@ -16,7 +16,7 @@ model=
 set -euo pipefail
 
 if [ $# -ne 3 ]; then
-  echo "Convert Kaldi lattices to HTK format. Removes LM scores and pushes transition probabilities to acoustic scores. Need to do LM rescoring in HTK"
+  echo "Convert Kaldi lattices to word level. Options to remove LM scores and push transition probabilities to acoustic scores."
   echo "Usage: $0 [options] <lang> <src-lattice-dir> <tgt-lattice-dir>"
   echo "e.g.:  "
   echo ""
