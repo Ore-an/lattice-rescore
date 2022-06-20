@@ -163,7 +163,7 @@ class Lattice(object):
         self.nframes = 0
         n_nodes = max([x['start'] for x in lat_list]) + 1  # the last node is a dict with 'start' only.
         self.nodes = [None] * n_nodes
-        self.arcs = [None] * len(lat_list)
+        self.arcs = [None] * (len(lat_list) - 1)  # last line only has the number of the final state
         self.nodes[0] = self.Node('!NULL', 0, None)
         for idx, arc_info in enumerate(lat_list[:-1]):
             # This is an arc

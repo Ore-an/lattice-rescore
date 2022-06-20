@@ -5,10 +5,10 @@ import glob
 import gzip
 import jiwer
 import editdistance
-# from espnet.asr.asr_utils import get_model_conf
-# from espnet.asr.asr_utils import torch_load
-# from espnet.asr.pytorch_backend.asr_init import load_trained_model
-# import espnet.nets.pytorch_backend.lm.default as lm_pytorch
+from espnet.asr.asr_utils import get_model_conf
+from espnet.asr.asr_utils import torch_load
+from espnet.asr.pytorch_backend.asr_init import load_trained_model
+import espnet.nets.pytorch_backend.lm.default as lm_pytorch
 import lattice
 
 def text_processing(acronyms_path=None):
