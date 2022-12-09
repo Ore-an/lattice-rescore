@@ -68,13 +68,13 @@ if [ $stage -le 1 ]; then
         if [ "$lm_fst_format" = "fst" ]; then
           $cmd JOB=1:$nj $dir/log/process_lattice.JOB.log \
             lattice-lmrescore --lm-scale=-1.0 "ark:gunzip -c $src_dir/lat.JOB.gz |" "fstproject --project_output=true $lang/G.fst |" ark:- \| \
-            lattice-align-words --output-error-lats=true $lang/phones/word_boundary.int $model ark:- ark,t:- \| \
-            utils/int2sym.pl -f 3 $lang/words.txt | gzip -c > $dir/JOB.lat.gz || exit 1
+            lattice-align-words --output-error-lats=true $lang/phones/word_boundary.int $model ark:- \
+	    "ark,t:|utils/int2sym.pl -f 3 $lang/words.txt | gzip -c > $dir/lat.JOB.gz" || exit 1
         elif [ "$lm_fst_format" = "carpa" ]; then
           $cmd JOB=1:$nj $dir/log/process_lattice.JOB.log \
             lattice-lmrescore-const-arpa --lm-scale=-1.0 "ark:gunzip -c $src_dir/lat.JOB.gz |" "$lang/G.carpa" ark:- \| \
-            lattice-align-words --output-error-lats=true $lang/phones/word_boundary.int $model ark:- ark,t:- \| \
-            utils/int2sym.pl -f 3 $lang/words.txt | gzip -c > $dir/JOB.lat.gz || exit 1
+            lattice-align-words --output-error-lats=true $lang/phones/word_boundary.int $model ark:- \
+	    "ark,t:|utils/int2sym.pl -f 3 $lang/words.txt | gzip -c > $dir/lat.JOB.gz" || exit 1
         else
           echo "Error: unrecognised --lm-fst-format $lm_fst_format"
           exit 1
@@ -86,15 +86,15 @@ if [ $stage -le 1 ]; then
             lattice-lmrescore --lm-scale=-1.0 "ark:gunzip -c $src_dir/lat.JOB.gz |" "fstproject --project_output=true $lang/G.fst |" ark:- \| \
             lattice-scale --lm2acoustic-scale=$tscale --lm-scale=0.0 ark:- ark:- \| \
             lattice-lmrescore --lm-scale=1.0 ark:- "fstproject --project_output=true $lang/G.fst |" ark:- \| \
-            lattice-align-words --output-error-lats=true $lang/phones/word_boundary.int $model ark:- ark,t:- \| \
-            utils/int2sym.pl -f 3 $lang/words.txt | gzip -c > $dir/JOB.lat.gz || exit 1
+            lattice-align-words --output-error-lats=true $lang/phones/word_boundary.int $model ark:- \
+	      "ark,t:|utils/int2sym.pl -f 3 $lang/words.txt | gzip -c > $dir/lat.JOB.gz" || exit 1
         elif [ "$lm_fst_format" = "carpa" ]; then
           $cmd JOB=1:$nj $dir/log/process_lattice.JOB.log \
             lattice-lmrescore-const-arpa --lm-scale=-1.0 "ark:gunzip -c $src_dir/lat.JOB.gz |" "$lang/G.carpa" ark:- \| \
             lattice-scale --lm2acoustic-scale=$tscale --lm-scale=0.0 ark:- ark:- \| \
             lattice-lmrescore-const-arpa --lm-scale=1.0 ark:- "$lang/G.carpa" ark:- \| \
-            lattice-align-words --output-error-lats=true $lang/phones/word_boundary.int $model ark:- ark,t:- \| \
-            utils/int2sym.pl -f 3 $lang/words.txt | gzip -c > $dir/JOB.lat.gz || exit 1
+            lattice-align-words --output-error-lats=true $lang/phones/word_boundary.int $model ark:- \
+	    "ark,t:|utils/int2sym.pl -f 3 $lang/words.txt | gzip -c > $dir/lat.JOB.gz" || exit 1
         else
           echo "Error: unrecognised --lm-fst-format $lm_fst_format"
           exit 1
@@ -103,8 +103,8 @@ if [ $stage -le 1 ]; then
     else
       # retain (LM+transition prob) and AC scores as they are in Kaldi lattice
       $cmd JOB=1:$nj $dir/log/process_lattice.JOB.log \
-        lattice-align-words --output-error-lats=true $lang/phones/word_boundary.int $model "ark:gunzip -c $src_dir/lat.JOB.gz |" ark,t:- \| \
-        utils/int2sym.pl -f 3 $lang/words.txt | gzip -c > $dir/JOB.lat.gz || exit 1
+        lattice-align-words --output-error-lats=true $lang/phones/word_boundary.int $model "ark:gunzip -c $src_dir/lat.JOB.gz |" \
+	"ark,t:|utils/int2sym.pl -f 3 $lang/words.txt | gzip -c > $dir/lat.JOB.gz" || exit 1
     fi
 
     # make list of lattices

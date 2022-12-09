@@ -5,6 +5,7 @@ import glob
 import gzip
 import jiwer
 import editdistance
+import torch
 from espnet.asr.asr_utils import get_model_conf
 from espnet.asr.asr_utils import torch_load
 from espnet.asr.pytorch_backend.asr_init import load_trained_model
@@ -142,7 +143,7 @@ def load_espnet_rnnlm(rnnlm_path):
     rnnlm.eval()
     return rnnlm, dictionary
 
-def load_espnet_model(model_path):
+def load_espnet_model(model_path, device='cpu'):
     """Load an end-to-end model from ESPnet.
 
     :param model_path: Path to the model.
@@ -153,7 +154,7 @@ def load_espnet_model(model_path):
     """
     model, train_args = load_trained_model(model_path)
     char_dict = {v: k for k, v in enumerate(train_args.char_list)}
-    model.eval()
+    model.to(device=device).eval()
     return model, char_dict, train_args
 
 def load_ref(file_path):
@@ -286,7 +287,7 @@ class kaldiLatticeIterator(object):
             for i, uttid in enumerate(self.uttids):
                 if self.dir_out:
                     os.makedirs(self.dir_out, exist_ok=True)
-                    file_out = "{}/{}.{}".format(self.dir_out, uttid, self.suffix_out)
+                    file_out = "{}/{}{}".format(self.dir_out, uttid, self.suffix_out)
                 else:
                     file_out = None
                 if self.resource:

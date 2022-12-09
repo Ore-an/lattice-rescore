@@ -17,17 +17,17 @@ class Cache(dict):
     Input list of string is first concatenated and then loop up.
     The key value pair is ngram: (state, pred, post).
     """
-    __slots__ = 'model', 'dict', 'type', 'sp', 'h', 'cache_locality', 'acronyms'
+    __slots__ = 'model', 'dict', 'type', 'sp', 'h', 'cache_locality', 'acronyms', 'device'
 
     @staticmethod
     def _process_args(mapping=(), **kwargs):
         if hasattr(mapping, 'items'):
             mapping = getattr(mapping, 'items')()
-        return ((' '.join(k), v)
+        return ((k, v)
                 for k, v in chain(mapping, getattr(kwargs, 'items')()))
 
     def __init__(self, model, dictionary, feat=None, model_type='rnnlm',
-                 sp=None, cache_locality=9, acronyms={}, mapping=(), **kwargs):
+                 sp=None, cache_locality=9, acronyms={}, device='cpu', mapping=(), **kwargs):
         super(Cache, self).__init__(self._process_args(mapping, **kwargs))
         self.model = model
         self.dict = dictionary
@@ -36,6 +36,7 @@ class Cache(dict):
         self.cache_locality = cache_locality
         self.acronyms = acronyms
         self.h = None
+        self.device = device
         if self.type == 'rnnlm':
             self.init_rnnlm()
         elif self.type == 'las':
@@ -67,8 +68,9 @@ class Cache(dict):
 
     def init_tfm(self, feat):
         assert feat is not None, 'for TFM model, acoustic feature must be given'
+        
         with torch.no_grad():
-            self.h = self.model.encode(feat).unsqueeze(0)
+            self.h = self.model.encode(torch.as_tensor(feat).to(device=self.device)).unsqueeze(0)
         self.__setitem__(([], 0), (('', 0.0), None, [], ([], 0), {}))
 
     def get_value_by_locality(self, timed_cache, key):
@@ -82,21 +84,25 @@ class Cache(dict):
 
     def __getitem__(self, k):
         ngram, timestamp = k
-        ngram_dict = super(Cache, self).__getitem__(' '.join(ngram))
+        try:
+            ngram_dict = super(Cache, self).__getitem__(tuple(ngram))
+        except Exception as e:
+            print("Search k: {} | Keys in cache: {} ".format(k, super(Cache, self).keys()))
+            raise e
         return self.get_value_by_locality(ngram_dict, timestamp)
 
     def __setitem__(self, k, v):
         ngram, timestamp = k
         try:
-            ngram_dict = super(Cache, self).__getitem__(' '.join(ngram))
+            ngram_dict = super(Cache, self).__getitem__(tuple(ngram))
             return ngram_dict.__setitem__(timestamp, v)
         except KeyError:
             return super(Cache, self).__setitem__(
-                ' '.join(ngram), {timestamp: v})
+                tuple(ngram), {timestamp: v})
 
     def __delitem__(self, k):
         ngram, timestamp = k
-        return super(Cache, self).__delitem__(' '.join(ngram))
+        return super(Cache, self).__delitem__(tuple(ngram))
 
     def get(self, k, default=None):
         try:
@@ -113,15 +119,15 @@ class Cache(dict):
     def pop(self, k, v=object()):
         ngram, timestamp = k
         if v is object():
-            return super(Cache, self).pop(' '.join(ngram))
-        return super(Cache, self).pop(' '.join(ngram), v)
+            return super(Cache, self).pop(tuple(ngram))
+        return super(Cache, self).pop(tuple(ngram), v)
 
     def update(self, mapping=(), **kwargs):
         super(Cache, self).update(self._process_args(mapping, **kwargs))
 
     def __contains__(self, k):
         ngram, timestamp = k
-        contain_ngram = super(Cache, self).__contains__(' '.join(ngram))
+        contain_ngram = super(Cache, self).__contains__(tuple(ngram))
         if not contain_ngram:
             return False
         try:
@@ -135,7 +141,7 @@ class Cache(dict):
 
     @classmethod
     def fromkeys(cls, keys, v=None):
-        return super(Cache, cls).fromkeys((' '.join(k) for k in keys), v)
+        return super(Cache, cls).fromkeys((k for k in keys), v)
 
     def __repr__(self):
         return '{0}({1})'.format(
@@ -206,8 +212,8 @@ class Cache(dict):
                         y = torch.LongTensor(
                             [self.model.sos]
                             + [sym2idx(self.dict, char) for char in hyp])
-                    y_in = y[:-1].unsqueeze(0)
-                    y_mask = target_mask(y_in, self.model.ignore_id)
+                    y_in = y[:-1].unsqueeze(0).to(device=self.device)
+                    y_mask = target_mask(y_in, self.model.ignore_id).to(device=self.device)
                     pred = self.model.decoder(y_in, y_mask, self.h, None)[0]
                     pred = torch.nn.functional.log_softmax(pred[0], dim=1)
                     score = torch.sum(
@@ -227,7 +233,7 @@ class Cache(dict):
 
     def get_timestamp(self, k):
         ngram, timestamp = k
-        ngram_dict = super(Cache, self).__getitem__(' '.join(ngram))
+        ngram_dict = super(Cache, self).__getitem__(tuple(ngram))
         cached_keys = list(ngram_dict.keys())
         distance = [abs(timestamp - i) for i in cached_keys]
         min_idx = np.argmin(distance)
@@ -302,8 +308,11 @@ class Cache(dict):
                             y = torch.LongTensor(
                                 [self.model.sos]
                                 + [sym2idx(self.dict, char) for char in hyp])
-                        y_in = y[:-1].unsqueeze(0)
-                        y_mask = target_mask(y_in, self.model.ignore_id)
+                        y_in = y[:-1].unsqueeze(0).to(device=self.device)
+                        y_mask = target_mask(y_in, self.model.ignore_id).to(device=self.device)
+                        # print(next(model.parameters()).device)
+                        # print(y_in.device)
+                        # print(y_mask.device)                        
                         pred = self.model.decoder(y_in, y_mask, self.h, None)[0]
                         pred = torch.nn.functional.log_softmax(pred[0], dim=1)
                         score = torch.sum(
@@ -357,8 +366,8 @@ def rnnlm_rescore(lat, lm, dictionary, ngram, replace=False, cache_locality=9):
                 phi_nk = ((phi_nj[0] + [n_k.sym])[-ngram:], n_k.entry)
                 try:
                     # check if the destination node needs to be expanded
-                    idx = [' '.join(i.lmstate[0]) for i in n_k.expnodes].index(
-                        ' '.join(phi_nk[0]))
+                    idx = [i.lmstate[0] for i in n_k.expnodes].index(
+                        phi_nk[0])
                     n_l = n_k.expnodes[idx]
                 except ValueError:
                     # create a new node for expansion
@@ -436,7 +445,7 @@ def rnnlm_rescore(lat, lm, dictionary, ngram, replace=False, cache_locality=9):
     return new_lat
 
 def isca_rescore(lat, feat, model, char_dict, ngram, sp, model_type='las',
-                 replace=False, cache_locality=9, acronyms={}):
+                 replace=False, cache_locality=9, acronyms={}, device='cpu'):
     """Lattice rescoring with LAS model with on-the-fly lattice expansion
     using n-gram based history clustering.
     Optionally, run forward-backward before calling this function,
@@ -468,7 +477,7 @@ def isca_rescore(lat, feat, model, char_dict, ngram, sp, model_type='las',
     # setup ngram cache
     cache = Cache(
         model, char_dict, feat=feat, model_type=model_type, sp=sp,
-        cache_locality=cache_locality, acronyms=acronyms
+        cache_locality=cache_locality, acronyms=acronyms, device=device
     )
     cache_hit = 0
     cache_miss_new = 0
@@ -490,8 +499,8 @@ def isca_rescore(lat, feat, model, char_dict, ngram, sp, model_type='las',
                 phi_nk = ((phi_nj[0] + [n_k.sym])[-ngram:], n_k.entry)
                 # check if the destination node needs to be expanded
                 try:
-                    idx = [' '.join(i.lmstate[0]) for i in n_k.expnodes].index(
-                        ' '.join(phi_nk[0]))
+                    idx = [i.lmstate[0] for i in n_k.expnodes].index(
+                           phi_nk[0])
                     n_l = n_k.expnodes[idx]
                 except ValueError:
                     # create a new node for expansion

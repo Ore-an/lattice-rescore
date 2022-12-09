@@ -7,20 +7,26 @@ import argparse
 import logging
 import time
 import numpy as np
+import torch
 
 from lattice import Lattice
 import lattice_rescore
 import utils
 
 def lattice_expand(from_iterator, ngram, gsf=None, rnnlms=None, iscas=None,
-                   sp=None, loaders=None, overwrite=False, acronyms={}, format='htk'):
+                   sp=None, loaders=None, overwrite=False, acronyms={}, lat_format='htk', gpu=False):
     """Lattice expansion and compute RNNLM and/or ISCA scores."""
     uttid, lat_in, lat_out, feat_path = from_iterator
     if not os.path.isfile(lat_out) or overwrite:
         timing = []
-        logging.info('Processing lattice %s' % lat_in)
+        if lat_format == 'kaldi':
+            logging.info('Processing lattice %s' % uttid)
+        else:
+            logging.info('Processing lattice %s' % lat_in)
         start = time.time()
-        lat = Lattice(lat_in, file_type=format)
+        lat = Lattice(lat_in, file_type=lat_format)
+        if lat_format == 'kaldi':
+            lat.dag2htk(out_lat + '.kaldi_test')
         if gsf is None:
             gsf = float(lat.header['lmscale'])
         timing.append(time.time() - start)
@@ -38,6 +44,10 @@ def lattice_expand(from_iterator, ngram, gsf=None, rnnlms=None, iscas=None,
                 model, char_dict, model_type = isca
                 start = time.time()
                 feat = loader([(uttid, feat_path)])[0][0]
+                if gpu:
+                    device = 'cuda'
+                else:
+                    device = 'cpu'
                 # Run forward-backward on lattice
                 lat.posterior(aw=1/gsf)
                 lat = lattice_rescore.isca_rescore(
@@ -49,6 +59,7 @@ def lattice_expand(from_iterator, ngram, gsf=None, rnnlms=None, iscas=None,
                     sp,
                     model_type=model_type,
                     acronyms=acronyms,
+                    device=device
                 )
                 timing.append(time.time() - start)
         logging.info('Write expanded lattice %s' % lat_out)
@@ -84,8 +95,12 @@ def main():
                         help='Overwrite existing output file if exits.')
     parser.add_argument('--acronyms', type=str, default=None,
                         help='Path to acronoym mapping (swbd)')
-    parser.add_argumet('--format', type=str, default='htk', choices=['htk', 'kaldi'],
+    parser.add_argument('--format', type=str, default='htk', choices=['htk', 'kaldi'], dest='lat_format',
                        help='Format of the lattices.')
+    parser.add_argument('--suffix', type=str, default='.lat',
+                        help='Suffix of the lattices.')
+    parser.add_argument('--gpu', action='store_true',
+                        help='Use GPU for espnet model')
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -114,8 +129,13 @@ def main():
         from espnet.utils.io_utils import LoadInputsAndTargets
         iscas, loaders = [], []
         for isca_path in args.isca_path:
-            model, char_dict, train_args = utils.load_espnet_model(isca_path)
+            if args.gpu:
+                device = 'cuda'
+            else:
+                device = 'cpu'
+            model, char_dict, train_args = utils.load_espnet_model(isca_path, device=device)
             module_name = train_args.model_module
+            model.eval()
             if 'transformer' in module_name or 'conformer' in module_name:
                 model_type = 'tfm'
             else:
@@ -133,6 +153,7 @@ def main():
             js = json.load(fh)['utts']
     else:
         iscas, loaders, js = None, None, None
+        
     # get sentencepiece model if needed
     if args.spm_path:
         import sentencepiece as spm
@@ -142,9 +163,9 @@ def main():
         sp = None
 
     # set up iterator and run all
-    if args.format == 'kaldi':
+    if args.lat_format == 'kaldi':
         all_lat = utils.kaldiLatticeIterator(
-            args.indir, '.lat', args.outdir, '.lat.gz', resource=js)
+            args.indir, args.suffix, args.outdir, '.lat.gz', resource=js)
     else:
         all_lat = utils.file_iterator(
             args.indir, '.lat.gz', args.outdir, '.lat.gz', resource=js)
@@ -153,9 +174,12 @@ def main():
     for each_iteration in all_lat:
         timing = lattice_expand(
             each_iteration, args.ngram, args.gsf, rnnlms, iscas, sp, loaders,
-            args.overwrite, acronyms, format=args.format
+            args.overwrite, acronyms, lat_format=args.lat_format, gpu=args.gpu
         )
-        all_time = timing if all_time is None else all_time + timing
+        if all_time is None:
+            all_time = timing
+        elif timing is not None:
+            all_time += timing
         counter += 1
     logging.info('Job finished on %s' % os.uname()[1])
     logging.info('Overall, for %d lattices, %.3f seconds used'

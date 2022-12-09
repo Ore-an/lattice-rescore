@@ -1,44 +1,43 @@
 #!/bin/bash
 set -e
 
-cmd=queue.pl
+cmd=run.pl
 
 nj=${1}
 dataset=${2}
-recog_set=${3}
-ngram=${4}
-rnnlm=${5}
-isca_1=${6}
-isca_2=${7}
-spm=${8}
-tag=${9}
-gsf=${10}
+ngram=${3}
+isca_1=${4}
+spm=${5}
+
+vis_devices=(3 4 5 6)
 
 # activate virtualenv
 . ./path.sh
 
 # split json file
-if [ ! -d "../exp_final/${dataset}/json/${recog_set}/split${nj}utt" ]; then
+if [ ! -d "./dump/${dataset}/deltafalse/split${nj}utt" ]; then
     splitjson.py \
         --parts ${nj} \
-        ../exp_final/${dataset}/json/${recog_set}/data.json
+        ./dump/${dataset}/deltafalse/data_unigram5000.json
 fi
 
 # submit jobs
-latdir="../exp_final/${dataset}/lattice/${recog_set}"
-latdir_out=${latdir}_latexp${ngram}g${tag}
+latdir="./tdnn_1d_sp_htk/decode_${dataset}_fisher_tgpr_b8.0_d75_nolm"
+latdir_out=${latdir}_rescore_espnet/
 mkdir -p ${latdir_out}/log
-echo $0 $@ >> ${latdir_out}/log/CMD
-${cmd} JOB=1:${nj} ${latdir_out}/log/get_lattice.JOB.log \
-    ./get_lattice.py \
-    ${latdir} \
-    ${latdir_out} \
-    ${ngram} \
-    --rnnlm_path ${rnnlm} \
-    --isca_path ${isca_1} \
-    --isca_path ${isca_2} \
-    --spm_path ${spm} \
-    --js_path ../exp_final/${dataset}/json/${recog_set}/split${nj}utt/data.JOB.json \
-    --gsf ${gsf} \
-    --overwrite
-    # --acronyms utils/acronyms.map \
+# echo $0 $@ >> ${latdir_out}/log/CMD
+# ${cmd} JOB=1:${nj} ${latdir_out}/log/get_lattice.JOB.log \
+#     utils/distribute_gpus.sh "${vis_devices[@]}" -- JOB\
+#     python ./get_lattice.py \5C
+#     ${latdir} \
+#     ${latdir_out} \
+#     ${ngram} \
+#     --isca_path ${isca_1} \
+#     --spm_path ${spm} \
+#     --js_path ./dump/${dataset}/deltafalse/split${nj}utt/data_unigram5000.JOB.json \
+#     --gpu 
+
+${cmd} JOB=1:${nj} ${latdir_out}/log/lattice_to_fst.JOB.log \
+       python utils/htk_lat_to_fst.py --fudge-factor 5.0 --acoustic-wt \
+       ${latdir_out} \
+       ${latdir_out}/words.txt JOB

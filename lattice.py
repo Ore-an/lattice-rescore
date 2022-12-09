@@ -161,20 +161,23 @@ class Lattice(object):
         """Read a Kaldi CompactLattice format list of dicts to populate a DAG."""
         self.header = {'lmscale': 1.0}
         self.nframes = 0
-        n_nodes = max([x['start'] for x in lat_list]) + 1  # the last node is a dict with 'start' only.
+        n_nodes = max([x['start'] for x in lat_list]) + 1  # the last arc is a dict with 'start' node only.
         self.nodes = [None] * n_nodes
         self.arcs = [None] * (len(lat_list) - 1)  # last line only has the number of the final state
-        self.nodes[0] = self.Node('!NULL', 0, None)
+        self.nodes[0] = self.Node(NULL, 0, None)
+        # self.nodes[-1] = self.Node(EOS, n_nodes-1, None)
         for idx, arc_info in enumerate(lat_list[:-1]):
             # This is an arc
             start_idx = arc_info['start']
             end_idx = arc_info['end']
             label = arc_info['label']
             if label == '<eps>':
-                if start_idx == 0:
+                if end_idx == n_nodes - 1:
                     label = SOS
-                else:
+                elif start_idx == 0:
                     label = EOS
+                else:
+                    label = UNK
             ascr = arc_info.get('acwt', 0)
             lscr = arc_info.get('lmwt', 0)
             nscr = arc_info.get('n', [])
@@ -182,14 +185,22 @@ class Lattice(object):
             frame_len = arc_info['frames']
 
             frame = self.nodes[start_idx].entry + frame_len
-            var = 1
-            node = self.Node(label, frame, var)
-            self.nodes[end_idx] = node
             if frame > self.nframes:
                 self.nframes = frame
-
-            start_node = self.nodes[start_idx]
+            var = 1
             end_node = self.nodes[end_idx]
+            if end_node is None:
+                print(end_idx, label)
+                node = self.Node(label, frame, var)
+                self.nodes[end_idx] = node
+                end_node = node
+            else:
+                print(end_node.sym, label)
+                print(end_idx)
+                assert end_node.sym == label
+            start_node = self.nodes[start_idx]
+            
+
 
             if isinstance(nscr, str):
                 nscr = [float(n) for n in nscr.split(',')]

@@ -15,7 +15,7 @@ set -euo pipefail
 
 kaldi_lat_dir=$1
 proc_lat_dir=$2
-proc_lat_dir_nolm=${proc_lat_dir}_nolm
+
 mkdir -p $proc_lat_dir
 
 echo "=========================" >> $proc_lat_dir/../CMD
@@ -24,8 +24,8 @@ echo $0 $@ >> $proc_lat_dir/../CMD
 
 
 if [ $stage -le 1 ]; then
-    mkdir -p $proc_lat_dir_nolm
-    echo "Processing Kaldi lattices in ${kaldi_lat_dir} and saving to ${proc_lat_dir_nolm}"
+    mkdir -p $proc_lat_dir
+    echo "Processing Kaldi lattices in ${kaldi_lat_dir} and saving to ${proc_lat_dir}"
     utils/process_lattice.sh \
         --cmd "$cmd" \
         --tscale $tscale \
@@ -34,7 +34,7 @@ if [ $stage -le 1 ]; then
         --lm-fst-format ${kaldilmformat} \
         $kaldilm \
         $kaldi_lat_dir \
-        $proc_lat_dir_nolm
+        $proc_lat_dir
 fi
 
 echo "Done!"

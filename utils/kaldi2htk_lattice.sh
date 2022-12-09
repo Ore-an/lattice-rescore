@@ -1,19 +1,20 @@
 echo $0 $@
 
-stage=1
+stage=2
 cmd='run.pl'
 tscale=1.0
-hlrescore="${HLRescore_BIN} -A -D -V -T 1"
 cfg='utils/hlrescore.cfg'
-dict='data/local/dict/lexicon.4htk.txt'
-kaldilm='data/lang_ami_fsh.o3g.kn'
+dict='data/local/dict/lexicon.txt'
+kaldilm='/disk/scratch4/acarmant/kaldi/egs/librispeech/s5/data/lang_test_fisher_tgpr'
 kaldilmformat='fst' # for swbd, the default kaldi lm is in arpa format
-htklm='data/local/lm/ami_fsh.o3g.kn.4htk'
+htklm='data/local/lm/fisher.o3g.kn'
 
 . ./path.sh
 . parse_options.sh
 
 set -euo pipefail
+HLRescore_BIN="/disk/scratch4/acarmant/software/htk/bin/HLRescore"
+hlrescore="${HLRescore_BIN} -A -D -V -T 1"
 
 kaldi_lat_dir=$1
 htk_lat_dir=$2
@@ -41,15 +42,19 @@ if [ $stage -le 1 ]; then
 fi
 
 if [ $stage -le 2 ]; then
-    nj=`cat $kaldi_lat_dir/num_jobs`
-    rm -f $htk_lat_dir/.error
-    echo "Writing to $htk_lat_dir"
+    nj=12
+    rm -f ${htk_lat_dir}/lm/.error
+    rm -f  ${htk_lat_dir}/lm/*/log 
+    echo "Writing to ${htk_lat_dir}/lm"
     for i in $(seq 1 $nj); do
         (
-        mkdir -p $htk_lat_dir/$i
-        for file in $htk_lat_dir_nolm/$i/*.lat.gz; do
-            $hlrescore -C $cfg -n $htklm -w -l $htk_lat_dir/$i \
-                $dict ${file%.gz} >> $htk_lat_dir/$i/log 2>&1
+        mkdir -p ${htk_lat_dir}/lm/$i
+        for file in ${htk_lat_dir}/$i/*.lat.gz; do
+	    ofn=${htk_lat_dir}/lm/${i}/$(basename $file)
+	    if [ ! -f $ofn ]; then
+            $hlrescore -C $cfg -n $htklm -w -l ${htk_lat_dir}/lm/$i \
+                       $dict ${file%.gz} >>  ${htk_lat_dir}/lm/$i/log 2>&1 || echo "$file is broken" >> ${htk_lat_dir}/lm/$i/errors
+	    fi
         done
         ) || touch $htk_lat_dir/.error &
     done
