@@ -6,6 +6,7 @@ import gzip
 import jiwer
 import editdistance
 import torch
+import k2
 from espnet.asr.asr_utils import get_model_conf
 from espnet.asr.asr_utils import torch_load
 from espnet.asr.pytorch_backend.asr_init import load_trained_model
@@ -248,12 +249,34 @@ class kaldiLatticeIterator(object):
         self.resource = resource
         open_fn = gzip.open if suffix_in.endswith('.gz') else open
         for fn in glob.glob('{}/*{}'.format(dir_in, suffix_in)):
-            with open_fn(fn, 'rt') as f:
-                kaldi_lattices = f.readlines()
-
-            lat = []
+            f = open_fn(fn, 'rt')
+            line = f.readline()
+            lats = {}
             uttid_found = False
-            for line in kaldi_lattices:
+            while line:
+                line = line.strip()
+                if not uttid_found:
+                    uttid = line
+                    uttid_found = True
+                else:
+                    if len(line) == 0:
+                        fsa = k2.Fsa.from_openfst('\n'.join(tmp_lat), aux_label_names=['frames'])
+                        lat[uttid] = k2.remove_epsilon(fsa)
+                        tmp_lat = []
+                        uttid_found = False
+                    elif len(line.split(' ')) == 1:
+                        tmp_lat.append(line)
+                    else:
+                        tmp_lat
+                        ls = line.split(' ')
+                        weights = ls[-1].split(',')
+                        w = float(weights[0]) + float(weights[1])
+                        t = len(weights[2].split('_'))
+                        tmp_lat.append(' '.join(ls[0:-1])+ ' ' + str(t) + ' ' + str(w))
+
+        for uttid, lat in lats.items():
+
+            while line:
                 line = line.strip().split(' ')
                 weight = None
                 if not uttid_found:
@@ -264,8 +287,10 @@ class kaldiLatticeIterator(object):
                         weights = line[-1].split(',')
                         weight = float(weights[0]) + float(weights[1])  # acoustic + lm (or transition if lmwt=-1)
                         frames = len(weights[2].split('_'))
+                        if weight == 0.0:
+                            weight = -0.0
                     elif line[0]:
-                        line = int(line[0])
+                        line = str(int(line[0])) + ' 0.0'
                     else:
                         self.lattice_dict[uttid] = lat
                         lat = []
@@ -275,6 +300,7 @@ class kaldiLatticeIterator(object):
                 elif isinstance(line, int):
                     lat.append({'start': line})
             self.uttids = list(self.lattice_dict.keys())
+            f.close()
 
     def __iter__(self):
         return self

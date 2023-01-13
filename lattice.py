@@ -13,6 +13,7 @@ NULL = '!NULL'
 SOS = '<s>'
 EOS = '</s>'
 UNK = '<unk>'
+EPS = '<eps>'
 OOV = '[oov]'
 SPECIAL_KEYS = [NULL, SOS, EOS, UNK, OOV]
 
@@ -173,13 +174,14 @@ class Lattice(object):
             label = arc_info['label']
             if label == '<eps>':
                 if end_idx == n_nodes - 1:
-                    label = SOS
-                elif start_idx == 0:
                     label = EOS
+                elif start_idx == 0:
+                    label = SOS
                 else:
                     label = UNK
-            ascr = arc_info.get('acwt', 0)
-            lscr = arc_info.get('lmwt', 0)
+            ascr = arc_info.get('acwt', -0)
+
+            lscr = arc_info.get('lmwt', -0)
             nscr = arc_info.get('n', [])
             iscr = arc_info.get('i', [])
             frame_len = arc_info['frames']
@@ -190,14 +192,9 @@ class Lattice(object):
             var = 1
             end_node = self.nodes[end_idx]
             if end_node is None:
-                print(end_idx, label)
                 node = self.Node(label, frame, var)
                 self.nodes[end_idx] = node
                 end_node = node
-            else:
-                print(end_node.sym, label)
-                print(end_idx)
-                assert end_node.sym == label
             start_node = self.nodes[start_idx]
             
 
