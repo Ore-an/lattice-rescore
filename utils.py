@@ -221,6 +221,19 @@ def file_iterator(dir_in, suffix_in, dir_out=None, suffix_out=None,
                 else:
                     yield uttid, file_in, file_out, None
 
+def list_iterator(file_in, suffix_in, resource=None):
+    with open(file_in) as f:
+        files = f.readlines()
+    for line in files:
+        fn = line.split()[0]
+        uttid = fn.split('/')[-1].replace(suffix_in, '')
+        if resource:
+            if uttid in resource:
+                yield uttid, fn, None, resource[uttid]
+            else:
+                continue
+        else:
+            yield uttid, fn, None, None
 
 class kaldiLatticeIterator(object):
     """Globs directory for files with certain suffix_in, open them end extract the lattice for all utterances.

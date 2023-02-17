@@ -13,6 +13,7 @@ NULL = '!NULL'
 SOS = '<s>'
 EOS = '</s>'
 UNK = '<unk>'
+EPS = '<eps>'
 OOV = '[oov]'
 SPECIAL_KEYS = [NULL, SOS, EOS, UNK, OOV]
 
@@ -154,8 +155,19 @@ class Lattice(object):
                 self.htk2dag(file_path)
             elif file_type == 'kaldi':
                 self.kaldi2dag(file_path)
+            # elif file_type == 'kaldidet':
+            #     self.kaldidet2dag(file_path)
             else:
                 raise ValueError('file_type must be either htk or kaldi')
+
+    # def kaldidet2dag(self, lat_list):
+    #     self.header = {'lmscale': 1.0}
+    #     self.nframes = 0
+    #     n_nodes = lat_list[1] + 4 # add null, start and end node +1 for zero indexing
+    #     lat_list = lat_list[0]
+    #     self.nodes = [None] * n_nodes
+    #     self.arcs = []  # TODO:math to get the right number?
+    #     self.nodes[0] = self.Node(NULL, 0, None)
 
     def kaldi2dag(self, lat_list):
         """Read a Kaldi CompactLattice format list of dicts to populate a DAG."""
@@ -173,13 +185,14 @@ class Lattice(object):
             label = arc_info['label']
             if label == '<eps>':
                 if end_idx == n_nodes - 1:
-                    label = SOS
-                elif start_idx == 0:
                     label = EOS
+                elif start_idx == 0:
+                    label = SOS
                 else:
                     label = UNK
-            ascr = arc_info.get('acwt', 0)
-            lscr = arc_info.get('lmwt', 0)
+            ascr = arc_info.get('acwt', -0)
+
+            lscr = arc_info.get('lmwt', -0)
             nscr = arc_info.get('n', [])
             iscr = arc_info.get('i', [])
             frame_len = arc_info['frames']
@@ -190,14 +203,9 @@ class Lattice(object):
             var = 1
             end_node = self.nodes[end_idx]
             if end_node is None:
-                print(end_idx, label)
                 node = self.Node(label, frame, var)
                 self.nodes[end_idx] = node
                 end_node = node
-            else:
-                print(end_node.sym, label)
-                print(end_idx)
-                assert end_node.sym == label
             start_node = self.nodes[start_idx]
             
 
@@ -565,6 +573,17 @@ class Lattice(object):
             end = end.src.prev
         best_path = list(reversed(best_path))
         return best_path
+
+    def onebest_lat(self, aw=1.0, lw=1.0, nw=[], iw=[], ip=0.0):
+        onebest = self.onebest(aw, lw, nw, iw, ip)
+        nodelist = set()
+        for a in onebest:
+            nodelist.add(a.src)
+            nodelist.add(self.end)
+        allnodes = set(self.nodes)
+        rmnodes = allnodes.difference(nodelist)
+        self.remove_nodes(rmnodes)
+
 
     def nbest(self, n, aw=1.0, lw=1.0, ip=0.0):
         """Find N-best paths in the lattice using Viterbi algorithm."""

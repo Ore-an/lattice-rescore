@@ -38,6 +38,6 @@ mkdir -p ${latdir_out}/log
 #     --gpu 
 
 ${cmd} JOB=1:${nj} ${latdir_out}/log/lattice_to_fst.JOB.log \
-       python utils/htk_lat_to_fst.py --fudge-factor 5.0 --acoustic-wt \
+       python utils/htk_lat_to_fst.py --fudge-factor 5.0 --acoustic-wt --lm\
        ${latdir_out} \
        ${latdir_out}/words.txt JOB
