@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 
 import os
+import random
 import glob
 import gzip
 import jiwer
 import editdistance
 import torch
-import k2
 from espnet.asr.asr_utils import get_model_conf
 from espnet.asr.asr_utils import torch_load
 from espnet.asr.pytorch_backend.asr_init import load_trained_model
@@ -144,7 +144,7 @@ def load_espnet_rnnlm(rnnlm_path):
     rnnlm.eval()
     return rnnlm, dictionary
 
-def load_espnet_model(model_path, device='cpu'):
+def load_espnet_model(model_path, device='cpu', mode='eval'):
     """Load an end-to-end model from ESPnet.
 
     :param model_path: Path to the model.
@@ -155,7 +155,12 @@ def load_espnet_model(model_path, device='cpu'):
     """
     model, train_args = load_trained_model(model_path)
     char_dict = {v: k for k, v in enumerate(train_args.char_list)}
-    model.to(device=device).eval()
+    if mode == 'eval':
+        model.eval()
+    elif mode == 'train':
+        model.train()
+    if device != 'cpu':
+        model.cuda()
     return model, char_dict, train_args
 
 def load_ref(file_path):
@@ -222,12 +227,52 @@ def file_iterator(dir_in, suffix_in, dir_out=None, suffix_out=None,
                 else:
                     yield uttid, file_in, file_out, None
 
+class listIterator(object):
+    def __init__(file_in, suffix_in, resource=None):
+        self.cache = {}
+        self.out = {}
+        self.resource = resource
+        with open(file_in) as f:
+            self.files = f.readlines()
+        
+    def load_it(self):
+        for line in files:
+            fn = line.split()[0]
+            uttid = fn.split('/')[-1].replace(suffix_in, '')
+            if resource:
+                if uttid in resource:
+                    self.out[uttid] = fn, None, resource[uttid]
+            else:
+                self.out[uttid] = fn, None, None
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return self.next()
+
+    def next(self):
+        if len(self.out) > 0:
+            for i, uttid in enumerate(self.out):
+                if self.resource:
+                    if uttid in self.resource:
+                        self.uttids = self.uttids[i + 1:]
+                        return uttid, self.lattice_dict[uttid], file_out, self.resource[uttid]
+                    else:
+                        continue
+                else:
+                    self.uttids = self.uttids[i+1:]
+                    return uttid, self.lattice_dict[uttid], file_out, None
+        else:
+            raise StopIteration()
+
+                
 def list_iterator(file_in, suffix_in, resource=None):
     with open(file_in) as f:
         files = f.readlines()
     for line in files:
         fn = line.split()[0]
-        uttid = fn.split('/')[-1].replace(suffix_in, '')
+        uttid = fn.split('/')[-1].replace(suffix_in, '')    
         if resource:
             if uttid in resource:
                 yield uttid, fn, None, resource[uttid]
@@ -236,6 +281,21 @@ def list_iterator(file_in, suffix_in, resource=None):
         else:
             yield uttid, fn, None, None
 
+def list_txt(file_in, resource=None):
+    with open(file_in) as f:
+        for line in f:
+            ls = line.split()
+            uttid = ls[0]
+            wds = ls[1:]
+            if resource:
+                if uttid in resource:
+                    yield uttid, wds, None, resource[uttid]
+                else:
+                    continue
+            else:
+                yield uttid, wds, None, None
+            
+            
 class kaldiLatticeIterator(object):
     """Globs directory for files with certain suffix_in, open them end extract the lattice for all utterances.
        Yelds processed utterances.
@@ -263,57 +323,29 @@ class kaldiLatticeIterator(object):
         open_fn = gzip.open if suffix_in.endswith('.gz') else open
         for fn in glob.glob('{}/*{}'.format(dir_in, suffix_in)):
             f = open_fn(fn, 'rt')
-            line = f.readline()
-            lats = {}
+            lat = []
             uttid_found = False
-            while line:
-                line = line.strip()
-                if not uttid_found:
-                    uttid = line
-                    uttid_found = True
-                else:
-                    if len(line) == 0:
-                        fsa = k2.Fsa.from_openfst('\n'.join(tmp_lat), aux_label_names=['frames'])
-                        lat[uttid] = k2.remove_epsilon(fsa)
-                        tmp_lat = []
-                        uttid_found = False
-                    elif len(line.split(' ')) == 1:
-                        tmp_lat.append(line)
-                    else:
-                        tmp_lat
-                        ls = line.split(' ')
-                        weights = ls[-1].split(',')
-                        w = float(weights[0]) + float(weights[1])
-                        t = len(weights[2].split('_'))
-                        tmp_lat.append(' '.join(ls[0:-1])+ ' ' + str(t) + ' ' + str(w))
-
-        for uttid, lat in lats.items():
-
-            while line:
-                line = line.strip().split(' ')
-                weight = None
+            for line in f:
+                line = line.strip().split()
                 if not uttid_found:
                     uttid = line[0]
                     uttid_found = True
                 else:
                     if len(line) > 1:
                         weights = line[-1].split(',')
-                        weight = float(weights[0]) + float(weights[1])  # acoustic + lm (or transition if lmwt=-1)
+                        acsc = float(weights[0])
+                        lmsc = float(weights[1])
                         frames = len(weights[2].split('_'))
-                        if weight == 0.0:
-                            weight = -0.0
-                    elif line[0]:
-                        line = str(int(line[0])) + ' 0.0'
-                    else:
+                        lat.append({'start': int(line[0]), 'end': int(line[1]), 'label': line[2], 'acsc': acsc, 'lmsc': lmsc, 'frames': frames * 3})
+                    elif len(line) == 0:
                         self.lattice_dict[uttid] = lat
                         lat = []
                         uttid_found = False
-                if weight is not None:
-                    lat.append({'start': int(line[0]), 'end': int(line[1]), 'label': line[2], 'acwt': -weight, 'frames': frames * 3})  # the original framerate is downsampled by 3 TODO: don't hardcode
-                elif isinstance(line, int):
-                    lat.append({'start': line})
-            self.uttids = list(self.lattice_dict.keys())
-            f.close()
+                    else:
+                        line = int(line[0])
+                        lat.append({'start': line})
+        self.uttids = list(self.lattice_dict.keys())
+        f.close()
 
     def __iter__(self):
         return self

@@ -12,14 +12,14 @@ import torch
 from espnet.nets.pytorch_backend.transformer.mask import target_mask
 import lattice
 from utils import sym2idx
-
-
+from torch.profiler import profile, record_function
+torch.autograd.set_detect_anomaly(True)
 class Cache(dict):
     """A customised dictionary as the cache for lattice rescoring.
     Input list of string is first concatenated and then loop up.
     The key value pair is ngram: (state, pred, post).
     """
-    __slots__ = 'model', 'dict', 'sp', 'h', 'cache_locality', 'acronyms', 'device', 'train', 'store_grad_cpu'
+    __slots__ = 'model', 'dict', 'sp', 'h', 'cache_locality', 'acronyms', 'device', 'train', 'store_grad_cpu', 'sos', 'eos', 'zero', #'fwd_model'
 
     @staticmethod
     def _process_args(mapping=(), **kwargs):
@@ -28,7 +28,7 @@ class Cache(dict):
         return ((k, v)
                 for k, v in chain(mapping, getattr(kwargs, 'items')()))
 
-    def __init__(self, model, dictionary, feat=None, sp=None, cache_locality=9, acronyms={},
+    def __init__(self, model, dictionary, sp=None, cache_locality=9, acronyms={},
                  device='cpu', train=False, mapping=(), store_grad_cpu=False, **kwargs):
         super(Cache, self).__init__(self._process_args(mapping, **kwargs))
         self.model = model
@@ -40,14 +40,23 @@ class Cache(dict):
         self.device = device
         self.train = train
         self.store_grad_cpu = store_grad_cpu and (device != 'cpu')
+        self.sos = torch.tensor([self.model.sos], dtype=torch.int64, device=self.device)
+        self.eos = torch.tensor([self.model.eos], dtype=torch.int64, device=self.device)
+        self.zero = torch.tensor(0.0, device=self.device)
+        # self.fwd_model = None
         assert self.sp is not None, 'sentencepiece model required'
-        self.init_tfm(feat)
-
-    def init_tfm(self, feat):
+    
+    def init_feat(self, feat):
         assert feat is not None, 'acoustic feature must be given'
-        
         self.h = self.model.encode(torch.as_tensor(feat, device=self.device)).unsqueeze(0)
-        self.__setitem__(([], 0), (('', torch.tensor(0.0)), None, [], ([], 0), {}))
+        self.__setitem__(([], 0), ((self.sos, torch.tensor(0.0, device=self.device)),
+                                   None,
+                                   [],
+                                   ([], 0),
+                                   {}))
+        # if self.fwd_model is None:
+        #     self.fwd_model = torch.jit.trace(self.fwd_model_ns, torch.tensor([self.model.sos, 40, 77, self.model.eos], dtype=torch.int64))
+        '''{(ngram, timestamp): (("history", full score), ???, posterior, (previous_ngram, prev_time), word_dict] }'''
 
     def get_value_by_locality(self, timed_cache, key):
         cached_keys = np.fromiter(timed_cache.keys(), dtype=int)
@@ -129,39 +138,42 @@ class Cache(dict):
     def get_pred(self, k, word):
         hist, hist_score = self.get_state(k)
         if word == lattice.SOS:
-            score = torch.tensor(0.0)
+            score = self.zero
         else:
             if word in self.get_word_dict(k):
                 return self.get_word_dict(k)[word]
             if word == lattice.EOS:
-                hyp = self.sp.encode_as_pieces(hist)
-                y = torch.tensor(
-                    [self.model.sos]
-                    + [sym2idx(self.dict, char) for char in hyp]
-                    + [self.model.eos], dtype=torch.int64, device=self.device)
+                y = torch.cat([hist, self.eos])
             else:
                 mapped_word = self.acronyms.get(word, word)
-                hyp = self.sp.encode_as_pieces(hist + ' ' + mapped_word)
-                y = torch.tensor(
-                    [self.model.sos]
-                    + [sym2idx(self.dict, char) for char in hyp], dtype=torch.int64, device=self.device)
-            y_in = y[:-1].unsqueeze(0)
-            y_mask = target_mask(y_in, self.model.ignore_id)
-            # if self.store_grad_cpu:
-            #     with torch.autograd.graph.save_on_cpu():
-            #         pred = self.model.decoder(y_in, y_mask, self.h, None)[0]
-            #         pred = torch.nn.functional.log_softmax(pred[0], dim=1)
-            #         score = torch.sum(
-            #                 pred[torch.arange(pred.size(0)), y[1:]])
-            # else:
-            pred = self.model.decoder(y_in, y_mask, self.h, None)[0]
-            pred = torch.nn.functional.log_softmax(pred[0], dim=1)
-            score = torch.sum(
-                    pred[torch.arange(pred.size(0)), y[1:]])
-
+                hyp = self.sp.encode_as_pieces(' ' + mapped_word)
+                hyp = torch.tensor([sym2idx(self.dict, char) for char in hyp], dtype=torch.int64, device=self.device)
+                y = torch.cat([hist, hyp])
+            score = self.fwd_model(y)
         self.get_word_dict(k)[word] = score - hist_score
         return score - hist_score
 
+    def fwd_model(self, y):
+        with record_function('unsqueeze'):
+            y_in = y[:-1].unsqueeze(0)
+        with record_function('mask'):
+            y_mask = target_mask(y_in, self.model.ignore_id)
+        # if self.store_grad_cpu:
+        #     with torch.autograd.graph.save_on_cpu():
+        #         pred = self.model.decoder(y_in, y_mask, self.h, None)[0]
+        #         pred = torch.nn.functional.log_softmax(pred[0], dim=1)
+        #         score = torch.sum(
+        #                 pred[torch.arange(pred.size(0)), y[1:]])
+        # else:
+        with record_function('decode'):
+            pred = self.model.decoder(y_in, y_mask, self.h, None)[0]
+        with record_function('logsoftmax'):
+            pred = torch.nn.functional.log_softmax(pred[0], dim=1)
+        with record_function('sum'):
+            score = torch.sum(
+                pred[torch.arange(pred.size(0)), y[1:]])
+        return score
+    
     def renew(self, prev_ngram, new_ngram, post):
         word = new_ngram[0][-1]
         if word in [lattice.OOV, lattice.UNK]:
@@ -170,38 +182,20 @@ class Cache(dict):
         else:
             hist, hist_score = self.get_state(prev_ngram)
             if word == lattice.SOS:
-                score = torch.tensor(0.0)
-                state = ('', score)
+                score = self.zero
+                state = (self.sos, score)
             else:
                 if word == lattice.EOS:
-                    hyp = self.sp.encode_as_pieces(hist)
-                    y = torch.tensor(
-                        [self.model.sos]
-                        + [sym2idx(self.dict, char) for char in hyp]
-                        + [self.model.eos], dtype=torch.int64, device=self.device)
+                    y = torch.cat([hist, self.eos])
                 else:
                     mapped_word = self.acronyms.get(word, word)
-                    hyp = self.sp.encode_as_pieces(hist + ' ' + mapped_word)
-                    y = torch.tensor([self.model.sos] + [sym2idx(self.dict, char) for char in hyp],
-                                     dtype=torch.int64, device=self.device)
-                y_in = y[:-1].unsqueeze(0)
-                y_mask = target_mask(y_in, self.model.ignore_id)
-                # print(next(model.parameters()).device)
-                # print(y_in.device)
-                # print(y_mask.device)
-                # if self.store_grad_cpu:
-                #     with torch.autograd.graph.save_on_cpu():
-                #         pred = self.model.decoder(y_in, y_mask, self.h, None)[0]
-                #         pred = torch.nn.functional.log_softmax(pred[0], dim=1)
-                #         score = torch.sum(
-                #         pred[torch.arange(pred.size(0)), y[1:]])
-                # else:
-                pred = self.model.decoder(y_in, y_mask, self.h, None)[0]
-                pred = torch.nn.functional.log_softmax(pred[0], dim=1)
-                score = torch.sum(
-                    pred[torch.arange(pred.size(0)), y[1:]])
+                    hyp = self.sp.encode_as_pieces(' ' + mapped_word)
+                    hyp = torch.tensor([sym2idx(self.dict, char) for char in hyp], dtype=torch.int64, device=self.device)
+                    y = torch.cat([hist, hyp])
+                with record_function('forward_model'):
+                    score = self.fwd_model(y)
+                state = (y, score)
 
-                state = (hist + ' ' + mapped_word, score)
             self.get_word_dict(prev_ngram)[word] = score - hist_score
             value = (state, None, post, prev_ngram, {})
         self.__setitem__(new_ngram, value)
@@ -226,20 +220,17 @@ class Cache(dict):
 
 # ([], 0): (('', torch.tensor(0.0)), None, [], ([], 0), {})
 '''{(ngram, timestamp): [("history", full score), ???, posterior, (previous_ngram, time?), word_dict] }'''
-def backprop(loss, word_count, optim, retain_graph=False):
-    if loss.grad_fn is not None:
-        loss = loss/word_count # avg loss
-        loss.backward(retain_graph=retain_graph)
-        optim.step()
-        optim.zero_grad(set_to_none=True)
-    else:
-        assert loss == 0.0
-    return loss.item()  # mean loss
 
+def backprop(loss, word_count, optim, keep=False):
+    loss = loss/word_count # avg loss
+    loss.backward(retain_graph=keep)
+    optim.step()
+    optim.zero_grad(set_to_none=True)
+    # return loss.item()  # mean loss
 
 # @profile_every(100)
-def isca_rescore(in_lat, feat, model, char_dict, ngram, sp,
-                 replace=False, cache_locality=9, acronyms={}, device='cpu', optim=None, max_arcs=500, acwt=1.0, lmwt=1.0, onebest=False, ff=1, soft_ob=False):
+def isca_rescore(in_lat, feat, model, char_dict, ngram, sp, cache,
+                 replace=False, cache_locality=9, acronyms={}, device='cpu', optim=None, max_arcs=500):
     """Lattice rescoring with LAS model with on-the-fly lattice expansion
     using n-gram based history clustering.
     Optionally, run forward-backward before calling this function,
@@ -271,11 +262,6 @@ def isca_rescore(in_lat, feat, model, char_dict, ngram, sp,
     # setup ngram cache
     lat = deepcopy(in_lat)
     store_grad_cpu = lat.num_arcs() > max_arcs
-    cache = Cache(
-        model, char_dict, feat=feat, sp=sp,
-        cache_locality=cache_locality, acronyms=acronyms, device=device,
-        store_grad_cpu=store_grad_cpu
-    )
     # initialise expanded node & outbound arc list
     for node in lat.nodes.values():
         node.expnodes = []
@@ -287,34 +273,36 @@ def isca_rescore(in_lat, feat, model, char_dict, ngram, sp,
     word_count = 0
     # lattice traversal
     
-    for n_i in lat.nodes.values():
-        for n_j in n_i.expnodes:
-            for a_k_idx in n_i.exits:
-                # find the destination node n_k of arc a_k
-                n_k = lat.get_arc_dest_node(a_k_idx)
-                # find the LM state phi(h_{n_0}^{n_j}) of expanded node n_j
-                phi_nj = n_j.lmstate
-                # find a new LM state phi(h_{n_0}^{n_k}) for node n_k
-                phi_nk = ((phi_nj[0] + [n_k.sym])[-ngram:], n_k.entry)
-                # check if the destination node needs to be expanded
-                try:
-                    idx = [i.lmstate[0] for i in n_k.expnodes].index(
-                           phi_nk[0])
-                    n_l = n_k.expnodes[idx]
-                except ValueError:
-                    # create a new node for expansion
-                    n_l = n_k.subnode()
-                    n_l.lmstate = deepcopy(phi_nk)
-                    n_k.expnodes.append(n_l)
-                new_arc = lat.arcs[a_k_idx].subarc(n_j, n_l)
+    with record_function("lattice_traversal"):
+        for n_i in lat.nodes.values():
+            for n_j in n_i.expnodes:
+                for a_k_idx in n_i.exits:
+                    # find the destination node n_k of arc a_k
+                    n_k = lat.get_arc_dest_node(a_k_idx)
+                    # find the LM state phi(h_{n_0}^{n_j}) of expanded node n_j
+                    phi_nj = n_j.lmstate
+                    # find a new LM state phi(h_{n_0}^{n_k}) for node n_k
+                    phi_nk = ((phi_nj[0] + [n_k.sym])[-ngram:], n_k.entry)
+                    # check if the destination node needs to be expanded
+                    try:
+                        idx = [i.lmstate[0] for i in n_k.expnodes].index(
+                               phi_nk[0])
+                        n_l = n_k.expnodes[idx]
+                    except ValueError:
+                        # create a new node for expansion
+                        n_l = n_k.subnode()
+                        n_l.lmstate = deepcopy(phi_nk)
+                        n_k.expnodes.append(n_l)
+                    new_arc = lat.arcs[a_k_idx].subarc(n_j, n_l)
 
-                # update cache except for the final node
-                if n_k.sym != lattice.EOS:
+                    # update cache except for the final node
+                    # if n_k.sym != lattice.EOS:
                     phi_nk_post = (cache.get_post(phi_nj) + [lat.arcs[a_k_idx].post])[-ngram:]
                     # compute LM probability P(n_k|phi(h_{n_0}^{n_j}))
                     if phi_nk not in cache:
                         # create new entry in cache for unseen ngram
-                        cache.renew(phi_nj, phi_nk, phi_nk_post)
+                        with record_function("renew_new_ngram"):
+                            cache.renew(phi_nj, phi_nk, phi_nk_post)
                     else:
                         timestamp_condition = (
                             abs(cache.get_timestamp(phi_nk) - n_k.entry)
@@ -332,49 +320,23 @@ def isca_rescore(in_lat, feat, model, char_dict, ngram, sp,
                             # if the previous ngram phi_nj is different
                             if posterior_condition or not timestamp_condition:
                                 # renew the cache with higher posterior
-                                cache.renew(phi_nj, phi_nk, phi_nk_post)
+                                with record_function("renew_seen_ngram"):
+                                    cache.renew(phi_nj, phi_nk, phi_nk_post)
 
 
-                if n_k.sym in [lattice.OOV, lattice.UNK]:
-                    pass
-                    # word_count += 1
-                    # loss_vec.append(0.0)
-                else:
-                    e2e_score = cache.get_pred(phi_nj, n_k.sym)
-                    if onebest and not soft_ob:
-                        this_loss = - e2e_score
+                    if n_k.sym in [lattice.OOV, lattice.UNK]:
+                        word_count += 1
+                        # loss_vec.append(0.0)
                     else:
-                        hyb_score = -torch.clamp(torch.tensor(new_arc.ascr * acwt + new_arc.lscr * lmwt, device=device), 0, None) # better to move this and next line to lattice loading
-                        hyb_score = hyb_score / ff
-                        this_loss = ((hyb_score) - e2e_score) * torch.exp(hyb_score)
-                    loss = loss + this_loss
-                    word_count += 1
-                new_arc_idx = lat.add_arc(new_arc)
-                n_j.exits.append(new_arc)
-                n_l.entries.append(new_arc)
-                # if word_count >= max_arcs:
-                #     tot_loss += backprop(loss, word_count, optim, retain_graph=True)
-                #     word_count = 0
-    tot_loss += backprop(loss, word_count, optim)
+                        with record_function("get_pred"):
+                            loss = loss - cache.get_pred(phi_nj, n_k.sym)
+                            word_count += 1
+                    new_arc_idx = lat.add_arc(new_arc)
+                    n_j.exits.append(new_arc)
+                    n_l.entries.append(new_arc)
+                    if word_count >= max_arcs:
+                        with record_function("backprop_max"):
+                            backprop(loss, word_count, optim, keep=True)
+    with record_function("backprop"):
+        backprop(loss, word_count, optim)
     return tot_loss
-'''    # Rebuild lattice from expanded nodes & arcs
-    loss = torch.tensor(0., device=device)
-    count = 0
-    for node in lat.nodes.values():
-
-        for expnode in node.expnodes:
-            for earc in expnode.entries:
-                # if earc.src.sym != lattice.SOS: # SOS is initialized, not a model output so no grad
-                    # earc.iscr negative, earc.ascr positive
-                    # ac_tensor = -torch.clamp(torch.tensor(
-                    #     (earc.ascr+earc.lscr), device=device), 0, None) # ascr is nll
-                    # loss += ((((ac_tensor / 5) - earc.iscr[0]) * torch.exp(ac_tensor)))  # iscr is ll, it should be p(x) * log(p(x)/q(x))
-                loss += -earc.iscr[0]
-                    # maybe post instead of ascr, maybe remove the P(x) at the end
-                count += 1
-                    # if count == 64:
-                    #     loss = loss / count
-                    #     loss.backward(retain_graph=True)
-                    #     loss = 0.
-                    #     count = 0
-'''

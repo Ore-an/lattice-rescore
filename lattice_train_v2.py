@@ -45,7 +45,6 @@ class Cache(dict):
 
     def init_tfm(self, feat):
         assert feat is not None, 'acoustic feature must be given'
-        
         self.h = self.model.encode(torch.as_tensor(feat, device=self.device)).unsqueeze(0)
         self.__setitem__(([], 0), (('', torch.tensor(0.0)), None, [], ([], 0), {}))
 
@@ -225,21 +224,19 @@ class Cache(dict):
         return cached_keys[min_idx]
 
 # ([], 0): (('', torch.tensor(0.0)), None, [], ([], 0), {})
+
 '''{(ngram, timestamp): [("history", full score), ???, posterior, (previous_ngram, time?), word_dict] }'''
-def backprop(loss, word_count, optim, retain_graph=False):
+def calculate_loss(loss, word_count, retain_graph=False):
     if loss.grad_fn is not None:
         loss = loss/word_count # avg loss
-        loss.backward(retain_graph=retain_graph)
-        optim.step()
-        optim.zero_grad(set_to_none=True)
     else:
         assert loss == 0.0
-    return loss.item()  # mean loss
+    return loss # mean loss
 
 
 # @profile_every(100)
 def isca_rescore(in_lat, feat, model, char_dict, ngram, sp,
-                 replace=False, cache_locality=9, acronyms={}, device='cpu', optim=None, max_arcs=500, acwt=1.0, lmwt=1.0, onebest=False, ff=1, soft_ob=False):
+                 replace=False, cache_locality=9, acronyms={}, device='cpu', optim=None, max_arcs=500, onebest=False, soft_ob=False):
     """Lattice rescoring with LAS model with on-the-fly lattice expansion
     using n-gram based history clustering.
     Optionally, run forward-backward before calling this function,
@@ -284,9 +281,8 @@ def isca_rescore(in_lat, feat, model, char_dict, ngram, sp,
 
     tot_loss = torch.tensor(0.0)
     loss = torch.tensor(0.0, device=device)
-    word_count = 0
+    word_count = torch.tensor(0, device=device)
     # lattice traversal
-    
     for n_i in lat.nodes.values():
         for n_j in n_i.expnodes:
             for a_k_idx in n_i.exits:
@@ -344,9 +340,9 @@ def isca_rescore(in_lat, feat, model, char_dict, ngram, sp,
                     if onebest and not soft_ob:
                         this_loss = - e2e_score
                     else:
-                        hyb_score = -torch.clamp(torch.tensor(new_arc.ascr * acwt + new_arc.lscr * lmwt, device=device), 0, None) # better to move this and next line to lattice loading
-                        hyb_score = hyb_score / ff
+                        hyb_score = -torch.clamp(torch.tensor(new_arc.ascr + new_arc.lscr, device=device), 0, None) # better to move this and next line to lattice loading
                         this_loss = ((hyb_score) - e2e_score) * torch.exp(hyb_score)
+                    this_loss = - e2e_score
                     loss = loss + this_loss
                     word_count += 1
                 new_arc_idx = lat.add_arc(new_arc)
@@ -355,8 +351,7 @@ def isca_rescore(in_lat, feat, model, char_dict, ngram, sp,
                 # if word_count >= max_arcs:
                 #     tot_loss += backprop(loss, word_count, optim, retain_graph=True)
                 #     word_count = 0
-    tot_loss += backprop(loss, word_count, optim)
-    return tot_loss
+    return calculate_loss(loss, word_count)
 '''    # Rebuild lattice from expanded nodes & arcs
     loss = torch.tensor(0., device=device)
     count = 0
